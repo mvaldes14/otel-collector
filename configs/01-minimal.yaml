@@ -1,0 +1,35 @@
+# 01 — the smallest legal collector config.
+#
+# One receiver (OTLP over gRPC and HTTP), one exporter (debug: prints every
+# telemetry item to stdout), one pipeline per signal. No processors at all —
+# that is legal; the `processors` key is simply absent.
+#
+# Run: docker compose up (this file is what compose mounts by default)
+#
+# What to watch for: the debug exporter prints the ENTIRE payload including
+# resource attributes. Find `service.name` in the output — that attribute comes
+# from the Resource, attached at the SDK side, and follows the data everywhere.
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+exporters:
+  debug:
+    verbosity: detailed   # basic | normal | detailed
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      exporters: [debug]
+    metrics:
+      receivers: [otlp]
+      exporters: [debug]
+    logs:
+      receivers: [otlp]
+      exporters: [debug]

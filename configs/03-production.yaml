@@ -1,0 +1,80 @@
+# 03 — production posture: the exporter can fail, and that must be survivable.
+#
+# New concepts vs 02:
+#   retry_on_failure / sending_queue — the two halves of durable export
+#   resourcedetection — stamp host/cloud metadata onto everything once, centrally,
+#                       instead of configuring every producer
+#   health_check — a liveness endpoint for k8s probes (the homelab agents expose :13133)
+#
+# The durability story, precisely:
+#   retry_on_failure handles TRANSIENT failures (connection refused, 429, 503).
+#   sending_queue holds data in memory while the destination is down.
+#   Neither survives a collector restart — in-memory queue dies with the process.
+#   For restart survival you need file_storage (an extension) as the queue storage.
+#
+# Order matters for memory_limiter: it must be FIRST in every pipeline so the
+# limiter sees data before any fan-out work happens.
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+  # file_storage:
+  #   directory: /var/lib/otelcol   # uncomment + mount a volume to survive restarts
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 400
+    spike_limit_mib: 100
+
+  resourcedetection:
+    detectors: [env, system]      # env first so OTEL_RESOURCE_ATTRIBUTES wins
+    timeout: 2s
+
+  batch:
+    timeout: 5s
+    send_batch_size: 8192
+
+exporters:
+  otlp/backend:
+    endpoint: backend:4317        # stand-in for SigNoz's collector
+    tls:
+      insecure: true
+    retry_on_failure:
+      enabled: true
+      initial_interval: 1s
+      max_interval: 30s           # exponential backoff caps here
+      max_elapsed_time: 5m        # give up after this; queue takes over
+    sending_queue:
+      enabled: true
+      queue_size: 5000            # batches held while backend is unreachable
+
+  debug:
+    verbosity: basic
+
+service:
+  extensions: [health_check]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, resourcedetection, batch]
+      exporters: [otlp/backend]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, resourcedetection, batch]
+      exporters: [otlp/backend]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, resourcedetection, batch]
+      exporters: [otlp/backend]
+  telemetry:
+    metrics:
+      address: 0.0.0.0:8888

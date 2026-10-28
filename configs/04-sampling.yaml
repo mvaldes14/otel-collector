@@ -1,0 +1,77 @@
+# 04 — tail sampling: decisions made AFTER the whole trace is assembled.
+#
+# New concepts vs 03:
+#   tail_sampling operates on complete traces (needs every span of a trace to
+#   pass through the SAME collector instance — it buffers by trace ID and waits
+#   wait_duration for stragglers before deciding)
+#   decision order is top-down: FIRST matching policy wins
+#   sampled traces go to the `sampled` pipeline leg; the rest are dropped
+#
+# Why "tail": head sampling (e.g. 1-in-10 at the SDK) decides before knowing
+# whether the request failed — you can lose exactly the traces you needed.
+# Tail sampling sees the error status, latency, and attributes first.
+#
+# Homelab tie-in: SigNoz ships tail_sampling in its default config. The
+# num_traces/expected_new_traces_per_sec numbers below are the memory budget:
+# each buffered trace costs memory proportional to its span count.
+#
+# Gotcha: tail_sampling is expensive and stateful. Do NOT put it on an agent
+# (per-node) collector unless all spans for a trace hit that same node.
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 800
+    spike_limit_mib: 200
+
+  tail_sampling:
+    decision_wait: 10s            # how long to wait for a trace's remaining spans
+    num_traces: 50000             # max traces held in memory (~trace count budget)
+    expected_new_traces_per_sec: 1000
+    policies:
+      - name: keep-all-errors
+        type: status_code
+        status_code:
+          status_codes: [ERROR]   # errors are never sampled away
+      - name: keep-slow-traces
+        type: latency
+        latency:
+          latency_threshold_ms: 1000   # anything over 1s is interesting
+      - name: sample-normal-traffic
+        type: probabilistic
+        probabilistic:
+          sampling_percentage: 10      # 10% of the boring remainder
+
+  batch:
+    timeout: 5s
+    send_batch_size: 8192
+
+exporters:
+  debug:
+    verbosity: basic
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, tail_sampling, batch]
+      exporters: [debug]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [debug]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [debug]
+  telemetry:
+    metrics:
+      address: 0.0.0.0:8888

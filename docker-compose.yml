@@ -1,0 +1,13 @@
+services:
+  collector:
+    image: otel/opentelemetry-collector-contrib:0.154.0
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      # swap 01-minimal.yaml for 02/03/04 as you work through them
+      - ./configs/01-minimal.yaml:/etc/otelcol/config.yaml:ro
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+      - "13133:13133" # health_check extension (used in 03)
+      - "8888:8888"   # collector self-metrics (used in 02+)
+    mem_limit: 512m   # pairs with memory_limiter in 02/03/04
